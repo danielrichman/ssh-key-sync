@@ -1,0 +1,11 @@
+_default:
+    key_1: True
+    key_2: True
+
+server.just.using.defaults:
+
+some.more, serv.ers:
+    key_3: True
+
+important.server, important.server.two:
+    key_2: False

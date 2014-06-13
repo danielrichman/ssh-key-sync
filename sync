@@ -1,0 +1,136 @@
+#!/usr/bin/env python3
+
+import sys
+import os.path
+import yaml
+import re
+import subprocess
+from datetime import datetime
+
+
+WHITESPACE_RE = re.compile("\s+")
+DEFAULT_CONFIG = {}
+SSH_OPTS = ["-T", "-o", "LogLevel=ERROR"]
+
+fn = os.path.join(os.path.dirname(__file__), "remote-script")
+with open(fn) as f:
+    REMOTE_SCRIPT = f.read()
+del f, fn
+
+
+def load_config(directory, filename="servers.yaml"):
+    with open(os.path.join(directory, filename)) as f:
+        config = yaml.safe_load(f)
+
+    if not isinstance(config, dict):
+        raise TypeError(filename + " should contain a dict")
+
+    config2 = {"_default": DEFAULT_CONFIG.copy()}
+
+    for cfg_key, value in config.items():
+        if value == None:
+            value = {}
+
+        if not isinstance(value, dict):
+            raise TypeError("config section {0} should be a dict"
+                            .format(cfg_key))
+
+        servers = [s.strip() for s in cfg_key.split(",")]
+        for server in servers:
+            if server.startswith("_") and server not in {"_default"}:
+                raise ValueError("Unrecognised server " + server)
+
+            config2.setdefault(server, {}).update(value)
+
+    return config2
+
+def apply_default(config):
+    default = config["_default"]
+
+    for server, s_cfg in config.items():
+        tmp = default.copy()
+        tmp.update(s_cfg)
+        config[server] = tmp
+
+    del config["_default"]
+
+def check_config(config):
+    for server, s_cfg in config.items():
+        for key_name, action in s_cfg.items():
+            if key_name.startswith("_"):
+                # for special keys later
+                raise ValueError("Unrecognised config key " + key_name)
+
+            if action not in {True, False}:
+                raise ValueError("Invalid action " + repr(action))
+
+def load_keys(directory):
+    keys = {}
+
+    for root, _, files in os.walk(directory):
+        for filename in files:
+            path = os.path.join(root, filename)
+
+            if filename.endswith(".pub"):
+                if filename == ".pub":
+                    raise ValueError("Empty key name " + path)
+                key_name = filename[:-4]
+            else:
+                key_name = filename
+
+            if key_name.startswith("_"):
+                raise ValueError("Bad key name " + path)
+
+            with open(path, encoding='ascii') as f:
+                cts = f.read()
+                cts = WHITESPACE_RE.sub(' ', cts)
+                cts = cts.strip()
+                keys[key_name] = cts
+
+    return keys
+
+def prepare_config_keys(config, key_names):
+    for server, s_cfg in config.items():
+        for key_name, action in s_cfg.items():
+            if key_name.startswith("_"):
+                continue
+
+            if key_name not in key_names:
+                raise ValueError("Key {0} (in server {1}) not present"
+                                 .format(key_name, server))
+
+        for key_name in key_names:
+            s_cfg.setdefault(key_name, False)
+
+def prepare_remote_script(server_config, keys):
+    want_keys = sorted(k for k, v in server_config.items() if v)
+    header = "# Updated on {0} with keys {1}"\
+                .format(datetime.utcnow().date(), ", ".join(want_keys))
+    lines = [header] + [keys[kn] for kn in want_keys] + [""]
+    data = "\n".join(lines)
+    return REMOTE_SCRIPT.replace("__DATA__", data)
+
+def push_keys(config, keys):
+    for server, s_cfg in config.items():
+        script = prepare_remote_script(s_cfg, keys)
+        p = subprocess.Popen(["ssh", server] + SSH_OPTS + ["python"],
+                             stdin=subprocess.PIPE)
+        p.stdin.write(script.encode("ascii"))
+        p.stdin.close()
+        p.wait()
+        if p.returncode == 0:
+            print("Pushed to", server, file=sys.stderr)
+        else:
+            print("Failed to push to", server, file=sys.stderr)
+
+def main():
+    directory = os.path.dirname(__file__)
+    keys = load_keys(os.path.join(directory, "keys"))
+    cfg = load_config(directory)
+    apply_default(cfg)
+    check_config(cfg)
+    prepare_config_keys(cfg, keys.keys())
+    push_keys(cfg, keys)
+
+if __name__ == "__main__":
+    main()
