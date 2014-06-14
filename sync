@@ -110,27 +110,42 @@ def prepare_remote_script(server_config, keys):
     data = "\n".join(lines)
     return REMOTE_SCRIPT.replace("__DATA__", data)
 
-def push_keys(config, keys):
-    for server, s_cfg in config.items():
-        script = prepare_remote_script(s_cfg, keys)
-        p = subprocess.Popen(["ssh", server] + SSH_OPTS + ["python"],
-                             stdin=subprocess.PIPE)
-        p.stdin.write(script.encode("ascii"))
-        p.stdin.close()
-        p.wait()
-        if p.returncode == 0:
-            print("Pushed to", server, file=sys.stderr)
-        else:
-            print("Failed to push to", server, file=sys.stderr)
+def check_servers(servers, config):
+    for server in servers:
+        if server not in config:
+            raise KeyError(server + " not found in config")
 
-def main():
+def push_keys(server, config, keys):
+    s_cfg = config[server]
+    script = prepare_remote_script(s_cfg, keys)
+
+    p = subprocess.Popen(["ssh", server] + SSH_OPTS + ["python"],
+                         stdin=subprocess.PIPE)
+
+    p.stdin.write(script.encode("ascii"))
+    p.stdin.close()
+
+    p.wait()
+    if p.returncode == 0:
+        print("Pushed to", server, file=sys.stderr)
+    else:
+        print("Failed to push to", server, file=sys.stderr)
+
+def main(servers):
     directory = os.path.dirname(__file__)
     keys = load_keys(os.path.join(directory, "keys"))
     cfg = load_config(directory)
     apply_default(cfg)
     check_config(cfg)
     prepare_config_keys(cfg, keys.keys())
-    push_keys(cfg, keys)
+
+    if servers == []:
+        servers = cfg.keys()
+    else:
+        check_servers(servers, cfg)
+
+    for server in servers:
+        push_keys(server, cfg, keys)
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])
